@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/couchbase/gocb/v2"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
 	"pub/internal/pub"
@@ -16,12 +17,14 @@ import (
 
 type Consumer struct {
 	controller pub.Controller
+	logger     *zap.Logger
 	batchSize  int
 }
 
-func NewConsumer(storage pub.Controller, batchSize int) (*Consumer, error) {
+func NewConsumer(storage pub.Controller, logger *zap.Logger, batchSize int) (*Consumer, error) {
 	c := Consumer{
 		controller: storage,
+		logger:     logger,
 		batchSize:  batchSize,
 	}
 
@@ -33,6 +36,9 @@ func NewConsumer(storage pub.Controller, batchSize int) (*Consumer, error) {
 }
 
 func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) error {
+	logger := c.logger.With(zap.String("topic", topic), zap.String("sub", sub))
+	logger.Info("attempting to pull messages")
+
 	offset, err := c.controller.GetCursor(ctx, topic, sub, shard)
 	if err != nil {
 		return fmt.Errorf("failed to get cursor: %w", err)
@@ -42,6 +48,8 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) error
 	if err != nil {
 		return fmt.Errorf("failed to load messages: %w", err)
 	}
+
+	logger.Debug("loaded messages", zap.Int("count", len(msgs)))
 
 	leased := make([]pub.Message, 0, len(msgs))
 	for _, msg := range msgs {
@@ -55,6 +63,8 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) error
 		}
 	}
 
+	logger.Debug("leased", zap.Int("count", len(leased)))
+
 	// process messages
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(c.batchSize / 2)
@@ -64,18 +74,28 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) error
 			// Simulate message processing
 			time.Sleep(time.Duration(50+rand.Intn(450)) * time.Millisecond)
 
-			if err := c.Ack(gctx, topic, msg); err != nil {
-				return fmt.Errorf("failed to ack message %s: %w", msg.ID, err)
+			if err := c.ack(gctx, logger, topic, msg); err != nil {
+				const errMsg = "failed to ack message"
+				logger.Error(errMsg, zap.String("messageId", msg.ID), zap.Error(err))
+				return fmt.Errorf(errMsg+": %w", err)
 			}
 
 			return nil
 		})
 	}
 
+	if err := g.Wait(); err != nil {
+		const msg = "failed to process messages"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
+	}
+
 	return nil
 }
 
-func (c *Consumer) Ack(ctx context.Context, sub string, msg pub.Message) error {
+func (c *Consumer) ack(ctx context.Context, logger *zap.Logger, sub string, msg pub.Message) error {
+	logger.Debug("acknowledging message", zap.String("messageId", msg.ID))
+
 	if err := c.controller.DeleteLease(ctx, sub, msg.ID); err != nil {
 		return fmt.Errorf("failed to delete lease for message %s: %w", msg.ID, err)
 	}
@@ -83,6 +103,8 @@ func (c *Consumer) Ack(ctx context.Context, sub string, msg pub.Message) error {
 	if err := c.controller.CommitCursor(msg.Topic, sub, msg.Shard, msg.Offset); err != nil {
 		return fmt.Errorf("failed to commit cursor for topic %s sub %s shard %d: %w", msg.Topic, sub, msg.Shard, err)
 	}
+
+	logger.Debug("cursor committed for offset", zap.Uint64("offset", msg.Offset), zap.String("messageId", msg.ID))
 
 	return nil
 }
