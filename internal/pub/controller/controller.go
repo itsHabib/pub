@@ -79,9 +79,36 @@ func (c *Controller) CommitCursor(topic, sub string, shard int, offset uint64) e
 	key := pub.CursorKey(topic, sub, shard)
 
 	_, err := c.transactions.Transaction(func(r couchbase.TransactionRunner) error {
-		res, err := r.Get(c.cursors, key)
-		switch {
-		case err == nil:
+		retry := true
+		for retry {
+			retry = false
+
+			res, err := r.Get(c.cursors, key)
+			switch {
+			case err == nil:
+			case errors.Is(err, gocb.ErrDocumentNotFound):
+				cursor := pub.Cursor{
+					ID:     key,
+					Topic:  topic,
+					Sub:    sub,
+					Shard:  shard,
+					Offset: offset,
+				}
+				_, err := r.Insert(c.cursors, key, cursor)
+				switch {
+				case err == nil:
+					return nil
+				case errors.Is(err, gocb.ErrDocumentExists):
+					// allow retry if the document already exists
+					retry = true
+					continue
+				default:
+					return fmt.Errorf("failed to insert new cursor: %w", err)
+				}
+			default:
+				return fmt.Errorf("failed to get cursor: %w", err)
+			}
+
 			var cursor pub.Cursor
 			if err := res.Content(&cursor); err != nil {
 				return fmt.Errorf("failed to decode cursor: %w", err)
@@ -96,19 +123,6 @@ func (c *Controller) CommitCursor(topic, sub string, shard int, offset uint64) e
 			if _, err := r.Replace(res, cursor); err != nil {
 				return fmt.Errorf("failed to replace cursor: %w", err)
 			}
-		case errors.Is(err, gocb.ErrDocumentNotFound):
-			cursor := pub.Cursor{
-				ID:     key,
-				Topic:  topic,
-				Sub:    sub,
-				Shard:  shard,
-				Offset: offset,
-			}
-			if _, err := r.Insert(c.cursors, key, cursor); err != nil {
-				return fmt.Errorf("failed to insert new cursor: %w", err)
-			}
-		default:
-			return fmt.Errorf("failed to get cursor: %w", err)
 		}
 
 		return nil
@@ -135,32 +149,44 @@ func (c *Controller) CommitOffset(topic string, shard int, currentOffset uint64)
 	offsetKey := pub.OffsetKey(topic, shard)
 
 	_, err := c.transactions.Transaction(func(r couchbase.TransactionRunner) error {
-		offsetRes, err := r.Get(c.offsets, offsetKey)
-		switch {
-		case err == nil:
-		case errors.Is(err, gocb.ErrDocumentNotFound):
-			offset := &pub.Offset{ID: offsetKey, N: currentOffset}
-			if _, err := r.Insert(c.offsets, offsetKey, *offset); err != nil {
-				return fmt.Errorf("failed to insert new offset: %w", err)
+		retry := true
+		for retry {
+			retry = false
+
+			offsetRes, err := r.Get(c.offsets, offsetKey)
+			switch {
+			case err == nil:
+			case errors.Is(err, gocb.ErrDocumentNotFound):
+				offset := &pub.Offset{ID: offsetKey, N: currentOffset}
+				_, err := r.Insert(c.offsets, offsetKey, *offset)
+				switch {
+				case err == nil:
+					return nil
+				case errors.Is(err, gocb.ErrDocumentExists):
+					// allow retry if the document already exists
+					retry = true
+					continue
+				default:
+					return fmt.Errorf("failed to insert new offset: %w", err)
+				}
+			default:
+				return fmt.Errorf("failed to get offset for topic %s shard %d: %w", topic, shard, err)
 			}
-			return nil
-		default:
-			return fmt.Errorf("failed to get offset for topic %s shard %d: %w", topic, shard, err)
-		}
 
-		var existing pub.Offset
-		if err := offsetRes.Content(&existing); err != nil {
-			return fmt.Errorf("failed to decode offset: %w", err)
-		}
+			var existing pub.Offset
+			if err := offsetRes.Content(&existing); err != nil {
+				return fmt.Errorf("failed to decode offset: %w", err)
+			}
 
-		if currentOffset <= existing.N {
-			// No update needed, current offset is already greater or equal
-			return nil
-		}
+			if currentOffset <= existing.N {
+				// No update needed, current offset is already greater or equal
+				return nil
+			}
 
-		existing.N = currentOffset
-		if _, err := r.Replace(offsetRes, existing); err != nil {
-			return fmt.Errorf("failed to replace offset: %w", err)
+			existing.N = currentOffset
+			if _, err := r.Replace(offsetRes, existing); err != nil {
+				return fmt.Errorf("failed to replace offset: %w", err)
+			}
 		}
 
 		return nil

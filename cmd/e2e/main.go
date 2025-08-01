@@ -18,6 +18,7 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/couchbase/gocb/v2"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
 
 	"pub/internal/pub/consumer"
@@ -30,10 +31,12 @@ type Config struct {
 	CouchbasePassword         string `env:"COUCHBASE_PASSWORD" envDefault:"password"`
 	CouchbaseBucketName       string `env:"COUCHBASE_BUCKET_NAME" envDefault:"pubsub"`
 	CouchbaseScopeName        string `env:"COUCHBASE_SCOPE_NAME" envDefault:"default"`
-	ConsumerBatchSize         int    `env:"CONSUMER_BATCH_SIZE" envDefault:"25"`
+	ConsumerBatchSize         int    `env:"CONSUMER_BATCH_SIZE" envDefault:"50"`
 	EventCount                int    `env:"EVENT_COUNT" envDefault:"1000"`
 	PublishMessagesPerSec     int    `env:"PUBLISH_MESSAGES_PER_SEC" envDefault:"0"`
+	PublishRounds             int    `env:"PUBLISH_ROUNDS" envDefault:"1"`
 	ConsumerMaxEmptyCount     int    `env:"CONSUMER_MAX_EMPTY_COUNT" envDefault:"2"`
+	LogLevel                  string `env:"LOG_LEVEL" envDefault:"info"`
 }
 
 func main() {
@@ -72,7 +75,13 @@ func main() {
 	}
 
 	config := zap.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+
+	var zapLevel zapcore.Level
+	if err := zapLevel.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		log.Printf("invalid log level %q, defaulting to info: %v", cfg.LogLevel, err)
+		zapLevel = zapcore.InfoLevel
+	}
+	config.Level = zap.NewAtomicLevelAt(zapLevel)
 	logger, err := config.Build(zap.AddCaller())
 	defer logger.Sync()
 	if err != nil {
@@ -141,20 +150,41 @@ func main() {
 		// default rate of 0 means no rate limiting
 		ticker := time.NewTicker(time.Second * max(time.Duration(cfg.PublishMessagesPerSec), 1))
 		defer ticker.Stop()
+		rounds := 0
 
-		topic := "orders"
-		e := events(cfg.EventCount)
-		if err := producer.PublishBatch(gctx, topic, 0, e...); err != nil {
-			logger.Error("failed to publish events", zap.Error(err))
-			return fmt.Errorf("failed to publish events: %w", err)
+		for {
+			select {
+			case <-gctx.Done():
+				return gctx.Err()
+			case <-ticker.C:
+				topic := "orders"
+				e := events(cfg.EventCount)
+				if err := producer.PublishBatch(gctx, topic, 0, e...); err != nil {
+					logger.Error("failed to publish events", zap.Error(err))
+					return fmt.Errorf("failed to publish events: %w", err)
+				}
+				logger.Info(fmt.Sprintf("published %d events", len(e)))
+				rounds++
+				if rounds >= cfg.PublishRounds {
+					logger.Info("publish rounds complete, stopping producer")
+					return nil
+				}
+			}
 		}
-		logger.Info(fmt.Sprintf("published %d events", len(e)))
-
-		return nil
 	})
 
 	time.Sleep(time.Millisecond * 10)
-	for _, sub := range []string{"order-processor", "analytics-service", "notification-service"} {
+	for _, sub := range []string{
+		"biz-2",
+		"orders-3",
+		"sales",
+		"analytics",
+		"marketing",
+		"alerts",
+		"support",
+		"another",
+		"test",
+	} {
 		g.Go(func() error {
 			return consume(gctx, logger, consumer, sub, cfg.ConsumerMaxEmptyCount)
 		})
@@ -169,7 +199,7 @@ func main() {
 
 func consume(ctx context.Context, logger *zap.Logger, consumer *consumer.Consumer, sub string, maxEmpty int) error {
 	var empty int
-	tick := time.NewTicker(1 * time.Second)
+	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 
 	for {
@@ -177,7 +207,6 @@ func consume(ctx context.Context, logger *zap.Logger, consumer *consumer.Consume
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
-			// Pull messages from the consumer
 			pulled, err := consumer.Pull(ctx, "orders", sub, 0)
 			if err != nil {
 				log.Printf("failed to pull messages: %v", err)

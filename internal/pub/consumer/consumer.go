@@ -10,6 +10,7 @@ import (
 
 	"github.com/couchbase/gocb/v2"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 
 	"pub/internal/pub"
 	"pub/internal/validator"
@@ -72,31 +73,28 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) (int,
 		}
 	}
 
-	// process messages
-	//	g, gctx := errgroup.WithContext(ctx)
-	//	g.SetLimit(c.batchSize / 2)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(c.batchSize)
 	for _, msg := range leased {
 		msg := msg
-		//		g.Go(func() error {
-		// Simulate message processing
-		logger.Debug("processing message", zap.Any("message", msg))
-		time.Sleep(time.Duration(50+rand.Intn(200)) * time.Millisecond)
+		g.Go(func() error {
+			logger.Debug("processing message", zap.Any("message", msg))
+			time.Sleep(time.Duration(50+rand.Intn(200)) * time.Millisecond)
 
-		if err := c.ack(ctx, logger, sub, msg); err != nil {
-			const errMsg = "failed to ack message"
-			logger.Error(errMsg, zap.String("messageId", msg.ID), zap.Error(err))
-			return 0, fmt.Errorf(errMsg+": %w", err)
-		}
-
-		//			return nil
-		//		})
+			if err := c.ack(gctx, logger, sub, msg); err != nil {
+				const errMsg = "failed to ack message"
+				logger.Error(errMsg, zap.String("messageId", msg.ID), zap.Error(err))
+				return fmt.Errorf(errMsg+": %w", err)
+			}
+			return nil
+		})
 	}
 
-	//if err := g.Wait(); err != nil {
-	//	const msg = "failed to process messages"
-	//	logger.Error(msg, zap.Error(err))
-	//	return 0, fmt.Errorf(msg+": %w", err)
-	//}
+	if err := g.Wait(); err != nil {
+		const msg = "failed to process messages"
+		logger.Error(msg, zap.Error(err))
+		return 0, fmt.Errorf(msg+": %w", err)
+	}
 
 	return len(leased), nil
 }
