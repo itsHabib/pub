@@ -13,11 +13,23 @@ import (
 	"pub/internal/validator"
 )
 
+// Producer is a concrete implementation of the pub.Producer interface.
+// It handles the conversion of events to messages, manages offset tracking,
+// and ensures atomic publishing operations through the controller layer.
 type Producer struct {
 	controller pub.Controller
 	logger     *zap.Logger
 }
 
+// NewProducer creates a new Producer instance with the provided dependencies.
+// The producer requires a controller for message persistence and offset management,
+// and a logger for operational observability.
+//
+// Parameters:
+//   - controller: Implementation of pub.Controller for data operations
+//   - logger: Structured logger for operational events and errors
+//
+// Returns a configured Producer instance or an error if validation fails.
 func NewProducer(controller pub.Controller, logger *zap.Logger) (*Producer, error) {
 	p := Producer{
 		controller: controller,
@@ -31,6 +43,17 @@ func NewProducer(controller pub.Controller, logger *zap.Logger) (*Producer, erro
 	return &p, nil
 }
 
+// PublishBatch implements pub.Producer.PublishBatch by converting events to messages
+// and persisting them with proper offset management. This method ensures atomic
+// publishing of all events in the batch - either all succeed or all fail.
+//
+// The publishing process:
+// 1. Retrieves the current offset for the topic shard (defaults to 0 if not found)
+// 2. Converts each event to a message with sequential offset numbering
+// 3. Persists each message (ignoring duplicates for idempotency)
+// 4. Updates the offset to reflect the new write position
+//
+// Returns an error if any step in the publishing process fails.
 func (p *Producer) PublishBatch(ctx context.Context, topic string, shard int, events ...pub.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -80,6 +103,9 @@ func (p *Producer) PublishBatch(ctx context.Context, topic string, shard int, ev
 
 	return nil
 }
+
+// ptr is a utility function that returns a pointer to the provided value.
+// This is commonly used for optional fields that need pointer types.
 func ptr[T any](v T) *T {
 	return &v
 }

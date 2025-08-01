@@ -25,6 +25,9 @@ type Controller struct {
 	scope  string
 }
 
+// NewController creates a new Controller instance with the provided storage dependencies.
+// All storage instances must be pre-configured with their respective Couchbase collections.
+// Returns a configured Controller instance or an error if validation fails.
 func NewController(
 	cursors *couchbase.Couchbase[pub.Cursor],
 	leases *couchbase.Couchbase[pub.Lease],
@@ -59,6 +62,8 @@ func NewController(
 	return &s, nil
 }
 
+// GetCursor implements pub.Controller.GetCursor by retrieving cursor position from storage.
+// Returns 0 for new subscriptions that don't have a cursor yet.
 func (c *Controller) GetCursor(ctx context.Context, topic, sub string, shard int) (uint64, error) {
 	key := pub.CursorKey(topic, sub, shard)
 
@@ -74,7 +79,8 @@ func (c *Controller) GetCursor(ctx context.Context, topic, sub string, shard int
 	}
 }
 
-// CommitCursor updates the offset for a subscription with optimistic concurrency control
+// CommitCursor implements pub.Controller.CommitCursor using distributed transactions.
+// Uses optimistic concurrency control to handle concurrent updates safely.
 func (c *Controller) CommitCursor(topic, sub string, shard int, offset uint64) error {
 	key := pub.CursorKey(topic, sub, shard)
 
@@ -135,6 +141,8 @@ func (c *Controller) CommitCursor(topic, sub string, shard int, offset uint64) e
 	return nil
 }
 
+// GetOffset implements pub.Controller.GetOffset by retrieving the current write position.
+// Returns 0 for new topic shards that don't have an offset yet.
 func (c *Controller) GetOffset(ctx context.Context, topic string, shard int) (uint64, error) {
 	offsetKey := pub.OffsetKey(topic, shard)
 	offset, err := c.offsets.Get(ctx, offsetKey, nil)
@@ -145,6 +153,8 @@ func (c *Controller) GetOffset(ctx context.Context, topic string, shard int) (ui
 	return offset.N, nil
 }
 
+// CommitOffset implements pub.Controller.CommitOffset using distributed transactions.
+// Advances the write position for producers publishing to a topic shard.
 func (c *Controller) CommitOffset(topic string, shard int, currentOffset uint64) error {
 	offsetKey := pub.OffsetKey(topic, shard)
 
@@ -200,6 +210,8 @@ func (c *Controller) CommitOffset(topic string, shard int, currentOffset uint64)
 }
 
 // InsertLease creates a lease for a message
+// InsertLease implements pub.Controller.InsertLease by creating a lease document.
+// Returns ErrDocumentExists if the message is already leased by another consumer.
 func (c *Controller) InsertLease(ctx context.Context, sub string, msgID string, offset uint64) error {
 	key := pub.LeaseKey(sub, msgID)
 	timeout := time.Minute
@@ -222,6 +234,8 @@ func (c *Controller) InsertLease(ctx context.Context, sub string, msgID string, 
 }
 
 // DeleteLease removes a lease for a message
+// DeleteLease implements pub.Controller.DeleteLease by removing the lease document.
+// Safe to call even if the lease doesn't exist.
 func (c *Controller) DeleteLease(ctx context.Context, sub string, msgID string) error {
 	key := pub.LeaseKey(sub, msgID)
 
@@ -232,6 +246,8 @@ func (c *Controller) DeleteLease(ctx context.Context, sub string, msgID string) 
 	return nil
 }
 
+// InsertMessage implements pub.Controller.InsertMessage by persisting to the messages collection.
+// Returns ErrDocumentExists if a message with the same ID already exists (for idempotency).
 func (c *Controller) InsertMessage(ctx context.Context, msg pub.Message) error {
 	if err := c.messages.Insert(
 		ctx,
@@ -248,6 +264,8 @@ func (c *Controller) InsertMessage(ctx context.Context, msg pub.Message) error {
 }
 
 // LoadMessages loads messages from a topic shard starting from a given offset
+// LoadMessages implements pub.Controller.LoadMessages using N1QL queries.
+// Returns messages ordered by offset for sequential processing.
 func (c *Controller) LoadMessages(ctx context.Context, topic string, shard int, fromOffset uint64, limit int) ([]pub.Message, error) {
 	query := fmt.Sprintf(`
 		SELECT RAW m

@@ -16,12 +16,19 @@ import (
 	"pub/internal/validator"
 )
 
+// Consumer is a concrete implementation of the pub.Consumer interface.
+// It provides at-least-once delivery semantics through lease-based message processing,
+// cursor management, and automatic acknowledgment handling.
 type Consumer struct {
 	controller pub.Controller
 	logger     *zap.Logger
 	batchSize  int
 }
 
+// NewConsumer creates a new Consumer instance with the provided dependencies.
+// The consumer requires a controller for data operations, a logger for observability,
+// and a batch size for controlling how many messages to process concurrently.
+// Returns a configured Consumer instance or an error if validation fails.
 func NewConsumer(controller pub.Controller, logger *zap.Logger, batchSize int) (*Consumer, error) {
 	c := Consumer{
 		controller: controller,
@@ -36,6 +43,10 @@ func NewConsumer(controller pub.Controller, logger *zap.Logger, batchSize int) (
 	return &c, nil
 }
 
+// Pull implements pub.Consumer.Pull by retrieving messages from a topic shard,
+// acquiring leases for exclusive processing, and handling message acknowledgment.
+// This method provides at-least-once delivery semantics and automatic cursor management.
+// Returns the number of messages successfully processed, or an error.
 func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) (int, error) {
 	logger := c.logger.With(zap.String("topic", topic), zap.String("sub", sub))
 	logger.Info("attempting to pull messages")
@@ -99,6 +110,10 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) (int,
 	return len(leased), nil
 }
 
+// ack handles the acknowledgment process for a successfully processed message.
+// This involves removing the lease to release the message lock and advancing
+// the cursor to mark the message as processed.
+// Returns an error if either the lease deletion or cursor commit fails.
 func (c *Consumer) ack(ctx context.Context, logger *zap.Logger, sub string, msg pub.Message) error {
 	logger.Debug("acknowledging message", zap.String("messageId", msg.ID))
 
