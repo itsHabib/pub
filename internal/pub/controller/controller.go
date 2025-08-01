@@ -19,8 +19,10 @@ type Controller struct {
 	messages     *couchbase.Couchbase[pub.Message]
 	offsets      *couchbase.Couchbase[pub.Offset]
 	transactions *couchbase.Transactions
-	bucket       string
-	scope        string
+	// don't love that take we in the bucket scope for this, should probably
+	// abstract out the querying so i dont have to
+	bucket string
+	scope  string
 }
 
 func NewController(
@@ -76,7 +78,7 @@ func (c *Controller) GetCursor(ctx context.Context, topic, sub string, shard int
 func (c *Controller) CommitCursor(topic, sub string, shard int, offset uint64) error {
 	key := pub.CursorKey(topic, sub, shard)
 
-	res, err := c.transactions.Transaction(func(r couchbase.TransactionRunner) error {
+	_, err := c.transactions.Transaction(func(r couchbase.TransactionRunner) error {
 		res, err := r.Get(c.cursors, key)
 		switch {
 		case err == nil:
@@ -112,8 +114,6 @@ func (c *Controller) CommitCursor(topic, sub string, shard int, offset uint64) e
 		return nil
 	})
 
-	fmt.Println("Transaction result:", res)
-
 	if err != nil {
 		return fmt.Errorf("failed to commit cursor: %w", err)
 	}
@@ -134,7 +134,7 @@ func (c *Controller) GetOffset(ctx context.Context, topic string, shard int) (ui
 func (c *Controller) CommitOffset(topic string, shard int, currentOffset uint64) error {
 	offsetKey := pub.OffsetKey(topic, shard)
 
-	transaction, err := c.transactions.Transaction(func(r couchbase.TransactionRunner) error {
+	_, err := c.transactions.Transaction(func(r couchbase.TransactionRunner) error {
 		offsetRes, err := r.Get(c.offsets, offsetKey)
 		switch {
 		case err == nil:
@@ -169,8 +169,6 @@ func (c *Controller) CommitOffset(topic string, shard int, currentOffset uint64)
 	if err != nil {
 		return fmt.Errorf("failed to commit transaction for commiting offset for topic %s shard %d: %w", topic, shard, err)
 	}
-
-	fmt.Println("Transaction committed successfully for commit offset:", transaction)
 
 	return nil
 }
@@ -225,15 +223,13 @@ func (c *Controller) InsertMessage(ctx context.Context, msg pub.Message) error {
 
 // LoadMessages loads messages from a topic shard starting from a given offset
 func (c *Controller) LoadMessages(ctx context.Context, topic string, shard int, fromOffset uint64, limit int) ([]pub.Message, error) {
-	var messages []pub.Message
-
 	query := fmt.Sprintf(`
-		SELECT *
-		FROM %s.%s.%s
-		WHERE offset >= %d
-		AND topic = '%s'
-		AND shard = %d
-		ORDER BY offset
+		SELECT RAW m
+		FROM %s.%s.%s m
+		WHERE`+"`offset`"+` >= %d
+		AND m.topic = '%s'
+		AND m.shard = %d
+		ORDER BY`+"`offset`"+`ASC
 		LIMIT %d`,
 		c.bucket,
 		c.scope,

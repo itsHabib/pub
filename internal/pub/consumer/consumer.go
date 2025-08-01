@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sort"
 	"time"
 
 	"github.com/couchbase/gocb/v2"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 
 	"pub/internal/pub"
 	"pub/internal/validator"
@@ -21,9 +21,9 @@ type Consumer struct {
 	batchSize  int
 }
 
-func NewConsumer(storage pub.Controller, logger *zap.Logger, batchSize int) (*Consumer, error) {
+func NewConsumer(controller pub.Controller, logger *zap.Logger, batchSize int) (*Consumer, error) {
 	c := Consumer{
-		controller: storage,
+		controller: controller,
 		logger:     logger,
 		batchSize:  batchSize,
 	}
@@ -35,21 +35,29 @@ func NewConsumer(storage pub.Controller, logger *zap.Logger, batchSize int) (*Co
 	return &c, nil
 }
 
-func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) error {
+func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) (int, error) {
 	logger := c.logger.With(zap.String("topic", topic), zap.String("sub", sub))
 	logger.Info("attempting to pull messages")
 
 	offset, err := c.controller.GetCursor(ctx, topic, sub, shard)
 	if err != nil {
-		return fmt.Errorf("failed to get cursor: %w", err)
+		return 0, fmt.Errorf("failed to get cursor: %w", err)
 	}
+	logger.Debug("got cursor", zap.Uint64("offset", offset))
 
 	msgs, err := c.controller.LoadMessages(ctx, topic, shard, offset, c.batchSize)
 	if err != nil {
-		return fmt.Errorf("failed to load messages: %w", err)
+		return 0, fmt.Errorf("failed to load messages: %w", err)
 	}
 
-	logger.Debug("loaded messages", zap.Int("count", len(msgs)))
+	sort.Slice(msgs, func(i, j int) bool {
+		return msgs[i].Offset < msgs[j].Offset
+	})
+
+	logger.Debug("loaded messages",
+		zap.Int("count", len(msgs)),
+		zap.Uint64("fromOffset", offset),
+	)
 
 	leased := make([]pub.Message, 0, len(msgs))
 	for _, msg := range msgs {
@@ -58,39 +66,39 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) error
 		case err == nil:
 			leased = append(leased, msg)
 		case errors.Is(err, gocb.ErrDocumentExists):
+			logger.Debug("lease already exists for message", zap.String("messageId", msg.ID))
 		default:
-			return fmt.Errorf("failed to insert lease for message %s: %w", msg.ID, err)
+			return 0, fmt.Errorf("failed to insert lease for message %s: %w", msg.ID, err)
 		}
 	}
 
-	logger.Debug("leased", zap.Int("count", len(leased)))
-
 	// process messages
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(c.batchSize / 2)
+	//	g, gctx := errgroup.WithContext(ctx)
+	//	g.SetLimit(c.batchSize / 2)
 	for _, msg := range leased {
 		msg := msg
-		g.Go(func() error {
-			// Simulate message processing
-			time.Sleep(time.Duration(50+rand.Intn(450)) * time.Millisecond)
+		//		g.Go(func() error {
+		// Simulate message processing
+		logger.Debug("processing message", zap.Any("message", msg))
+		time.Sleep(time.Duration(50+rand.Intn(200)) * time.Millisecond)
 
-			if err := c.ack(gctx, logger, topic, msg); err != nil {
-				const errMsg = "failed to ack message"
-				logger.Error(errMsg, zap.String("messageId", msg.ID), zap.Error(err))
-				return fmt.Errorf(errMsg+": %w", err)
-			}
+		if err := c.ack(ctx, logger, sub, msg); err != nil {
+			const errMsg = "failed to ack message"
+			logger.Error(errMsg, zap.String("messageId", msg.ID), zap.Error(err))
+			return 0, fmt.Errorf(errMsg+": %w", err)
+		}
 
-			return nil
-		})
+		//			return nil
+		//		})
 	}
 
-	if err := g.Wait(); err != nil {
-		const msg = "failed to process messages"
-		logger.Error(msg, zap.Error(err))
-		return fmt.Errorf(msg+": %w", err)
-	}
+	//if err := g.Wait(); err != nil {
+	//	const msg = "failed to process messages"
+	//	logger.Error(msg, zap.Error(err))
+	//	return 0, fmt.Errorf(msg+": %w", err)
+	//}
 
-	return nil
+	return len(leased), nil
 }
 
 func (c *Consumer) ack(ctx context.Context, logger *zap.Logger, sub string, msg pub.Message) error {
@@ -100,7 +108,10 @@ func (c *Consumer) ack(ctx context.Context, logger *zap.Logger, sub string, msg 
 		return fmt.Errorf("failed to delete lease for message %s: %w", msg.ID, err)
 	}
 
-	if err := c.controller.CommitCursor(msg.Topic, sub, msg.Shard, msg.Offset); err != nil {
+	logger.Debug("lease deleted for message", zap.String("messageId", msg.ID))
+
+	// Always commit to next offset since we've processed this message
+	if err := c.controller.CommitCursor(msg.Topic, sub, msg.Shard, msg.Offset+1); err != nil {
 		return fmt.Errorf("failed to commit cursor for topic %s sub %s shard %d: %w", msg.Topic, sub, msg.Shard, err)
 	}
 

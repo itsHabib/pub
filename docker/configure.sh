@@ -37,48 +37,44 @@ if ! couchbase-cli server-list -c localhost:8091 -u Administrator -p password >/
     --wait
 
   echo "Creating pub bucket scope..."
-  couchbase-cli bucket-manage \
-    --cluster localhost \
-    --username Administrator \
-    --password password \
-    --bucket pubsub \
-    --scope create default
-
-  echo "Creating pub bucket collection offset..."
   couchbase-cli collection-manage \
     --cluster localhost \
     --username Administrator \
     --password password \
     --bucket pubsub \
-    --scope default \
-    --collection create offset
+    --create-scope default
 
-  echo "Creating pub bucket collection cursor..."
+  echo "Creating pub bucket collection offsets..."
   couchbase-cli collection-manage \
     --cluster localhost \
     --username Administrator \
     --password password \
     --bucket pubsub \
-    --scope default \
-    --collection create cursor
+    --create-collection default.offsets
 
-  echo "Creating pub bucket collection message..."
+  echo "Creating pub bucket collection cursors..."
   couchbase-cli collection-manage \
     --cluster localhost \
     --username Administrator \
     --password password \
     --bucket pubsub \
-    --scope default \
-    --collection create message
+    --create-collection default.cursors
 
-  echo "Creating pub bucket collection lease..."
+  echo "Creating pub bucket collection messages..."
   couchbase-cli collection-manage \
     --cluster localhost \
     --username Administrator \
     --password password \
     --bucket pubsub \
-    --scope default \
-    --collection create lease
+    --create-collection default.messages
+
+  echo "Creating pub bucket collection leases..."
+  couchbase-cli collection-manage \
+    --cluster localhost \
+    --username Administrator \
+    --password password \
+    --bucket pubsub \
+    --create-collection default.leases
 fi
 
 fg 1

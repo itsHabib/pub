@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/couchbase/gocb/v2"
+	"go.uber.org/zap"
 
 	"pub/internal/pub"
 	"pub/internal/validator"
@@ -14,11 +15,13 @@ import (
 
 type Producer struct {
 	controller pub.Controller
+	logger     *zap.Logger
 }
 
-func NewProducer(controller pub.Controller) (*Producer, error) {
+func NewProducer(controller pub.Controller, logger *zap.Logger) (*Producer, error) {
 	p := Producer{
 		controller: controller,
+		logger:     logger,
 	}
 
 	if err := validator.Validate("producer", p.controller); err != nil {
@@ -28,18 +31,23 @@ func NewProducer(controller pub.Controller) (*Producer, error) {
 	return &p, nil
 }
 
-func (p *Producer) PublishBatch(ctx context.Context, topic string, shard int, events []pub.Event) error {
+func (p *Producer) PublishBatch(ctx context.Context, topic string, shard int, events ...pub.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 
+	logger := p.logger.With(zap.String("topic", topic), zap.Int("shard", shard))
+
 	offset, err := p.controller.GetOffset(ctx, topic, shard)
 	switch {
 	case err == nil:
+		logger.Debug("retrieved offset", zap.Uint64("offset", offset))
 	case errors.Is(err, gocb.ErrDocumentNotFound):
 		offset = 0
 	default:
-		return fmt.Errorf("failed to get offset for topic %s shard %d: %w", topic, shard, err)
+		const msg = "failed to get offset for topic and shard"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
 	}
 
 	for i, e := range events {
@@ -54,15 +62,21 @@ func (p *Producer) PublishBatch(ctx context.Context, topic string, shard int, ev
 		}
 
 		if err := p.controller.InsertMessage(ctx, m); err != nil && !errors.Is(err, gocb.ErrDocumentExists) {
-			return fmt.Errorf("failed to insert message with ID %s: %w", m.ID, err)
+			const msg = "failed to insert message"
+			logger.Error(msg, zap.String("messageId", m.ID), zap.Error(err))
+			return fmt.Errorf("msg: %w", err)
 		}
-
-		offset++
 	}
+
+	offset += uint64(len(events))
 
 	if err := p.controller.CommitOffset(topic, shard, offset); err != nil {
-		return fmt.Errorf("failed to commit offset for topic %s shard %d: %w", topic, shard, err)
+		const msg = "failed to commit offset for topic and shard"
+		logger.Error(msg, zap.Error(err))
+		return fmt.Errorf(msg+": %w", err)
 	}
+
+	logger.Debug("committed offset", zap.Uint64("offset", offset))
 
 	return nil
 }

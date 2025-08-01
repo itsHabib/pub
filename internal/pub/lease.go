@@ -12,7 +12,7 @@ import (
 type Lease struct {
 	ID        string    `json:"id"`
 	Sub       string    `json:"sub"`
-	MessageID string    `json:"messageID"`
+	MessageID string    `json:"messageId"`
 	Offset    uint64    `json:"offset"`
 	Expires   time.Time `json:"expires"`
 
