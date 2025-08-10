@@ -23,24 +23,31 @@ import (
 
 	"pub/internal/pub/consumer"
 	"pub/internal/pub/controller"
+	"pub/internal/pub/metrics"
+	"pub/internal/pub/tracing"
 )
 
 type Config struct {
-	CouchbaseConnectionString string `env:"COUCHBASE_CONNECTION_STRING" envDefault:"couchbase://localhost"`
-	CouchbaseUsername         string `env:"COUCHBASE_USERNAME" envDefault:"Administrator"`
-	CouchbasePassword         string `env:"COUCHBASE_PASSWORD" envDefault:"password"`
-	CouchbaseBucketName       string `env:"COUCHBASE_BUCKET_NAME" envDefault:"pubsub"`
-	CouchbaseScopeName        string `env:"COUCHBASE_SCOPE_NAME" envDefault:"default"`
-	ConsumerBatchSize         int    `env:"CONSUMER_BATCH_SIZE" envDefault:"50"`
-	EventCount                int    `env:"EVENT_COUNT" envDefault:"1000"`
-	PublishMessagesPerSec     int    `env:"PUBLISH_MESSAGES_PER_SEC" envDefault:"0"`
-	PublishRounds             int    `env:"PUBLISH_ROUNDS" envDefault:"1"`
-	ConsumerMaxEmptyCount     int    `env:"CONSUMER_MAX_EMPTY_COUNT" envDefault:"2"`
-	LogLevel                  string `env:"LOG_LEVEL" envDefault:"info"`
+	CouchbaseConnectionString string        `env:"COUCHBASE_CONNECTION_STRING" envDefault:"couchbase://localhost"`
+	CouchbaseUsername         string        `env:"COUCHBASE_USERNAME" envDefault:"Administrator"`
+	CouchbasePassword         string        `env:"COUCHBASE_PASSWORD" envDefault:"password"`
+	CouchbaseBucketName       string        `env:"COUCHBASE_BUCKET_NAME" envDefault:"pubsub"`
+	CouchbaseScopeName        string        `env:"COUCHBASE_SCOPE_NAME" envDefault:"default"`
+	ConsumerBatchSize         int           `env:"CONSUMER_BATCH_SIZE" envDefault:"50"`
+	EventCount                int           `env:"EVENT_COUNT" envDefault:"100"`
+	PublishMessagesPerSec     int           `env:"PUBLISH_MESSAGES_PER_SEC" envDefault:"0"`
+	PublishRounds             int           `env:"PUBLISH_ROUNDS" envDefault:"1"`
+	ConsumerMaxEmptyCount     int           `env:"CONSUMER_MAX_EMPTY_COUNT" envDefault:"2"`
+	LogLevel                  string        `env:"LOG_LEVEL" envDefault:"info"`
+	MetricsPort               int           `env:"METRICS_PORT" envDefault:"9090"`
+	MetricsTimeout            time.Duration `env:"METRICS_TIMEOUT" envDefault:"30s"`
+	TracingServiceName        string        `env:"TRACING_SERVICE_NAME" envDefault:"pub-e2e"`
+	TracingServiceVersion     string        `env:"TRACING_SERVICE_VERSION" envDefault:"1.0.0"`
+	JaegerEndpoint            string        `env:"JAEGER_ENDPOINT" envDefault:"localhost:4318"`
+	TracingSampleRate         float64       `env:"TRACING_SAMPLE_RATE" envDefault:"1.0"`
 }
 
 func main() {
-	// CPU Profile
 	cpuProfile, err := os.Create("cpu.pprof")
 	if err != nil {
 		log.Fatal("could not create CPU profile: ", err)
@@ -58,7 +65,7 @@ func main() {
 			log.Fatal("could not create memory profile: ", err)
 		}
 		defer memProfile.Close()
-		runtime.GC() // get up-to-date statistics
+		runtime.GC()
 		if err := pprof.WriteHeapProfile(memProfile); err != nil {
 			log.Fatal("could not write memory profile: ", err)
 		}
@@ -88,6 +95,53 @@ func main() {
 		log.Fatalf("failed to initialize logger: %v", err)
 	}
 
+	metricsRegistry := metrics.NewRegistry()
+	metricsRegistry.SetSystemInfo("e2e-test", time.Now().Format(time.RFC3339))
+
+	metricsServer := metrics.NewServer(
+		metrics.ServerConfig{
+			Port:    cfg.MetricsPort,
+			Timeout: cfg.MetricsTimeout,
+		},
+		metricsRegistry,
+		logger,
+	)
+
+	go func() {
+		if err := metricsServer.Start(context.Background()); err != nil {
+			logger.Error("metrics server failed", zap.Error(err))
+		}
+	}()
+
+	logger.Info("metrics server started",
+		zap.String("endpoint", fmt.Sprintf("http://localhost:%d/metrics", cfg.MetricsPort)),
+		zap.String("health", fmt.Sprintf("http://localhost:%d/health", cfg.MetricsPort)),
+	)
+
+	tracingConfig := tracing.Config{
+		ServiceName:    cfg.TracingServiceName,
+		ServiceVersion: cfg.TracingServiceVersion,
+		JaegerEndpoint: cfg.JaegerEndpoint,
+		SampleRate:     cfg.TracingSampleRate,
+	}
+	tracer, tracingCleanup, err := tracing.NewTracer(tracingConfig)
+	if err != nil {
+		log.Fatalf("failed to initialize tracing: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracingCleanup(shutdownCtx); err != nil {
+			logger.Error("failed to cleanup tracing", zap.Error(err))
+		}
+	}()
+
+	logger.Info("tracing initialized",
+		zap.String("service", cfg.TracingServiceName),
+		zap.String("jaeger_endpoint", cfg.JaegerEndpoint),
+		zap.Float64("sample_rate", cfg.TracingSampleRate),
+	)
+
 	cursors, err := pub.NewCursorsStore(cluster, bucket, cfg.CouchbaseScopeName)
 	if err != nil {
 		log.Fatalf("failed to create cursors store: %v", err)
@@ -110,7 +164,7 @@ func main() {
 		log.Fatalf("failed to create transactions: %v", err)
 	}
 
-	ctlr, err := controller.NewController(
+	baseController, err := controller.NewController(
 		cursors,
 		leases,
 		messages,
@@ -123,15 +177,22 @@ func main() {
 		log.Fatalf("failed to create controller: %v", err)
 	}
 
-	consumer, err := consumer.NewConsumer(ctlr, logger, cfg.ConsumerBatchSize)
+	metricsController := controller.NewMetricsController(baseController, metricsRegistry)
+	ctlr := controller.NewTracedController(metricsController, tracer)
+
+	baseConsumer, err := consumer.NewConsumer(ctlr, logger, cfg.ConsumerBatchSize)
 	if err != nil {
 		log.Fatalf("failed to create consumer: %v", err)
 	}
+	metricsConsumer := consumer.NewMetricsConsumer(baseConsumer, metricsRegistry)
+	consumer := consumer.NewTracedConsumer(metricsConsumer, tracer)
 
-	producer, err := producer.NewProducer(ctlr, logger)
+	baseProducer, err := producer.NewProducer(ctlr, logger)
 	if err != nil {
 		log.Fatalf("failed to create producer: %v", err)
 	}
+	metricsProducer := producer.NewMetricsProducer(baseProducer, metricsRegistry)
+	producer := producer.NewTracedProducer(metricsProducer, tracer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
@@ -194,10 +255,16 @@ func main() {
 		logger.Error("error in goroutine", zap.Error(err))
 	}
 
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := metricsServer.Stop(shutdownCtx); err != nil {
+		logger.Error("failed to stop metrics server", zap.Error(err))
+	}
+
 	fmt.Printf("\n\n TEST COMPLETE IN %.2f seconds", time.Since(now).Seconds())
 }
 
-func consume(ctx context.Context, logger *zap.Logger, consumer *consumer.Consumer, sub string, maxEmpty int) error {
+func consume(ctx context.Context, logger *zap.Logger, consumer pub.Consumer, sub string, maxEmpty int) error {
 	var empty int
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()

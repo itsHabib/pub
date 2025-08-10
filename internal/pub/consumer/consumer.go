@@ -110,6 +110,12 @@ func (c *Consumer) Pull(ctx context.Context, topic, sub string, shard int) (int,
 	return len(leased), nil
 }
 
+// Ack implements pub.Consumer.Ack by acknowledging a successfully processed message.
+// This removes the lease on the message and advances the cursor for the subscription.
+func (c *Consumer) Ack(ctx context.Context, sub string, msg pub.Message) error {
+	return c.ack(ctx, c.logger, sub, msg)
+}
+
 // ack handles the acknowledgment process for a successfully processed message.
 // This involves removing the lease to release the message lock and advancing
 // the cursor to mark the message as processed.

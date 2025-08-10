@@ -1,0 +1,49 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Docker container logs from application file
+  - job_name: pub-application
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pub-application
+          container_name: "pub-e2e"
+          __path__: /var/log/pub-application.log
+    
+    pipeline_stages:
+      - json:
+          expressions:
+            timestamp: ts
+            level: level
+            logger: logger
+            message: msg
+            caller: caller
+            trace_id: trace_id
+            span_id: span_id
+            topic: topic
+            shard: shard
+            subscription: subscription
+      - timestamp:
+          format: Unix
+          source: timestamp
+      - labels:
+          level:
+          logger:
+          container_name:
+          trace_id:
+          span_id:
+          topic:
+          shard:
+          subscription:
+      - output:
+          source: message
+
