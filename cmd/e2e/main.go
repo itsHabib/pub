@@ -44,8 +44,9 @@ type Config struct {
 	TracingServiceName        string        `env:"TRACING_SERVICE_NAME" envDefault:"pub-e2e"`
 	TracingServiceVersion     string        `env:"TRACING_SERVICE_VERSION" envDefault:"1.0.0"`
 	JaegerEndpoint            string        `env:"JAEGER_ENDPOINT" envDefault:"http://localhost:4318"`
-	TracingSampleRate         float64       `env:"TRACING_SAMPLE_RATE" envDefault:"1.0"`
+	TracingSampleRate         float64       `env:"TRACING_SAMPLE_RATE" envDefault:"0.01"`
 	EnableProfiling           bool          `env:"ENABLE_PROFILING" envDefault:"false"`
+	EnableTracing             bool          `env:"ENABLE_TRACING" envDefault:"false"`
 }
 
 func main() {
@@ -122,29 +123,36 @@ func main() {
 		zap.String("health", fmt.Sprintf("http://localhost:%d/health", cfg.MetricsPort)),
 	)
 
-	tracingConfig := tracing.Config{
-		ServiceName:    cfg.TracingServiceName,
-		ServiceVersion: cfg.TracingServiceVersion,
-		JaegerEndpoint: cfg.JaegerEndpoint,
-		SampleRate:     cfg.TracingSampleRate,
-	}
-	tracer, tracingCleanup, err := tracing.NewTracer(tracingConfig)
-	if err != nil {
-		log.Fatalf("failed to initialize tracing: %v", err)
-	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := tracingCleanup(shutdownCtx); err != nil {
-			logger.Error("failed to cleanup tracing", zap.Error(err))
+	var tracer *tracing.Tracer
+	if cfg.EnableTracing {
+		tracingConfig := tracing.Config{
+			ServiceName:    cfg.TracingServiceName,
+			ServiceVersion: cfg.TracingServiceVersion,
+			JaegerEndpoint: cfg.JaegerEndpoint,
+			SampleRate:     cfg.TracingSampleRate,
 		}
-	}()
+		var tracingCleanup func(context.Context) error
+		var err error
+		tracer, tracingCleanup, err = tracing.NewTracer(tracingConfig)
+		if err != nil {
+			log.Fatalf("failed to initialize tracing: %v", err)
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tracingCleanup(shutdownCtx); err != nil {
+				logger.Error("failed to cleanup tracing", zap.Error(err))
+			}
+		}()
 
-	logger.Info("tracing initialized",
-		zap.String("service", cfg.TracingServiceName),
-		zap.String("jaeger_endpoint", cfg.JaegerEndpoint),
-		zap.Float64("sample_rate", cfg.TracingSampleRate),
-	)
+		logger.Info("tracing initialized",
+			zap.String("service", cfg.TracingServiceName),
+			zap.String("jaeger_endpoint", cfg.JaegerEndpoint),
+			zap.Float64("sample_rate", cfg.TracingSampleRate),
+		)
+	} else {
+		logger.Info("tracing disabled")
+	}
 
 	cursors, err := pub.NewCursorsStore(cluster, bucket, cfg.CouchbaseScopeName)
 	if err != nil {
@@ -168,35 +176,9 @@ func main() {
 		log.Fatalf("failed to create transactions: %v", err)
 	}
 
-	baseController, err := controller.NewController(
-		cursors,
-		leases,
-		messages,
-		offsets,
-		transactions,
-		cfg.CouchbaseBucketName,
-		cfg.CouchbaseScopeName,
-	)
-	if err != nil {
-		log.Fatalf("failed to create controller: %v", err)
-	}
-
-	metricsController := controller.NewMetricsController(baseController, metricsRegistry)
-	ctlr := controller.NewTracedController(metricsController, tracer)
-
-	baseConsumer, err := consumer.NewConsumer(ctlr, logger, cfg.ConsumerBatchSize)
-	if err != nil {
-		log.Fatalf("failed to create consumer: %v", err)
-	}
-	metricsConsumer := consumer.NewMetricsConsumer(baseConsumer, metricsRegistry)
-	consumer := consumer.NewTracedConsumer(metricsConsumer, tracer)
-
-	baseProducer, err := producer.NewProducer(ctlr, logger)
-	if err != nil {
-		log.Fatalf("failed to create producer: %v", err)
-	}
-	metricsProducer := producer.NewMetricsProducer(baseProducer, metricsRegistry)
-	producer := producer.NewTracedProducer(metricsProducer, tracer)
+	ctlr := newController(cursors, leases, messages, offsets, transactions, cfg.CouchbaseBucketName, cfg.CouchbaseScopeName, metricsRegistry, tracer, cfg.EnableTracing)
+	c := newConsumer(ctlr, logger, cfg.ConsumerBatchSize, metricsRegistry, tracer, cfg.EnableTracing)
+	p := newProducer(ctlr, logger, metricsRegistry, tracer, cfg.EnableTracing)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 1)
@@ -224,7 +206,7 @@ func main() {
 			case <-ticker.C:
 				topic := "orders"
 				e := events(cfg.EventCount)
-				if err := producer.PublishBatch(gctx, topic, 0, e...); err != nil {
+				if err := p.PublishBatch(gctx, topic, 0, e...); err != nil {
 					logger.Error("failed to publish events", zap.Error(err))
 					return fmt.Errorf("failed to publish events: %w", err)
 				}
@@ -238,7 +220,7 @@ func main() {
 		}
 	})
 
-	time.Sleep(time.Millisecond * 10)
+	time.Sleep(time.Millisecond * 500)
 	for _, sub := range []string{
 		"biz-2",
 		"orders-3",
@@ -251,7 +233,7 @@ func main() {
 		"test",
 	} {
 		g.Go(func() error {
-			return consume(gctx, logger, consumer, sub, cfg.ConsumerMaxEmptyCount)
+			return consume(gctx, logger, c, sub, cfg.ConsumerMaxEmptyCount)
 		})
 	}
 
@@ -268,16 +250,64 @@ func main() {
 	fmt.Printf("\n\n TEST COMPLETE IN %.2f seconds", time.Since(now).Seconds())
 }
 
+// newController creates a fully configured controller with metrics and optional tracing.
+// This factory function handles the complete creation flow from base controller to wrapped controller.
+func newController(cursors *couchbase.Couchbase[pub.Cursor], leases *couchbase.Couchbase[pub.Lease], messages *couchbase.Couchbase[pub.Message], offsets *couchbase.Couchbase[pub.Offset], transactions *couchbase.Transactions, bucket string, scope string, metricsRegistry *metrics.Registry, tracer *tracing.Tracer, enableTracing bool) pub.Controller {
+	baseController, err := controller.NewController(
+		cursors,
+		leases,
+		messages,
+		offsets,
+		transactions,
+		bucket,
+		scope,
+	)
+	if err != nil {
+		log.Fatalf("failed to create controller: %v", err)
+	}
+
+	metricsController := controller.NewMetricsController(baseController, metricsRegistry)
+	if enableTracing {
+		return controller.NewTracedController(metricsController, tracer)
+	}
+	return metricsController
+}
+
+// newConsumer creates a fully configured consumer with metrics and optional tracing.
+// This factory function handles the complete creation flow from base consumer to wrapped consumer.
+func newConsumer(ctlr pub.Controller, logger *zap.Logger, batchSize int, metricsRegistry *metrics.Registry, tracer *tracing.Tracer, enableTracing bool) pub.Consumer {
+	baseConsumer, err := consumer.NewConsumer(ctlr, logger, batchSize)
+	if err != nil {
+		log.Fatalf("failed to create consumer: %v", err)
+	}
+	metricsConsumer := consumer.NewMetricsConsumer(baseConsumer, metricsRegistry)
+	if enableTracing {
+		return consumer.NewTracedConsumer(metricsConsumer, tracer)
+	}
+	return metricsConsumer
+}
+
+// newProducer creates a fully configured producer with metrics and optional tracing.
+// This factory function handles the complete creation flow from base producer to wrapped producer.
+func newProducer(ctlr pub.Controller, logger *zap.Logger, metricsRegistry *metrics.Registry, tracer *tracing.Tracer, enableTracing bool) pub.Producer {
+	baseProducer, err := producer.NewProducer(ctlr, logger)
+	if err != nil {
+		log.Fatalf("failed to create producer: %v", err)
+	}
+	metricsProducer := producer.NewMetricsProducer(baseProducer, metricsRegistry)
+	if enableTracing {
+		return producer.NewTracedProducer(metricsProducer, tracer)
+	}
+	return metricsProducer
+}
+
 func consume(ctx context.Context, logger *zap.Logger, consumer pub.Consumer, sub string, maxEmpty int) error {
 	var empty int
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-tick.C:
+		default:
 			pulled, err := consumer.Pull(ctx, "orders", sub, 0)
 			if err != nil {
 				log.Printf("failed to pull messages: %v", err)

@@ -75,6 +75,16 @@ if ! couchbase-cli server-list -c localhost:8091 -u Administrator -p password >/
     --password password \
     --bucket pubsub \
     --create-collection default.leases
+
+  echo "Waiting for collections to be ready..."
+  sleep 10
+
+  echo "Creating performance index for messages..."
+  cbq -e http://localhost:8093 -u Administrator -p password -s="
+    CREATE INDEX idx_messages_topic_shard_offset 
+    ON \`pubsub\`.\`default\`.\`messages\`(topic, shard, \`offset\`)
+    WHERE topic IS NOT MISSING;
+  "
 fi
 
 fg 1

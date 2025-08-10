@@ -24,7 +24,7 @@ type Config struct {
 	ServiceVersion string        `env:"TRACING_SERVICE_VERSION" envDefault:"1.0.0"`
 	JaegerEndpoint string        `env:"JAEGER_ENDPOINT" envDefault:"localhost:4318"`
 	SampleRate     float64       `env:"TRACING_SAMPLE_RATE" envDefault:"1.0"`
-	BatchTimeout   time.Duration `env:"TRACING_BATCH_TIMEOUT" envDefault:"1s"`
+	BatchTimeout   time.Duration `env:"TRACING_BATCH_TIMEOUT" envDefault:"5s"`
 	ExportTimeout  time.Duration `env:"TRACING_EXPORT_TIMEOUT" envDefault:"30s"`
 	MaxExportBatch int           `env:"TRACING_MAX_EXPORT_BATCH" envDefault:"512"`
 	MaxQueueSize   int           `env:"TRACING_MAX_QUEUE_SIZE" envDefault:"2048"`
@@ -59,7 +59,7 @@ func NewTracer(config Config) (*Tracer, func(context.Context) error, error) {
 	exporter, err := otlptracehttp.New(
 		context.Background(),
 		otlptracehttp.WithEndpoint(config.JaegerEndpoint),
-		otlptracehttp.WithInsecure(), // Use HTTP instead of HTTPS for local development
+		otlptracehttp.WithInsecure(),
 		otlptracehttp.WithTimeout(config.ExportTimeout),
 	)
 	if err != nil {
