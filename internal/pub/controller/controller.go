@@ -13,6 +13,9 @@ import (
 	"pub/internal/validator"
 )
 
+// Controller is the concrete implementation of the pub.Controller interface.
+// It manages message persistence, cursor tracking, offset management, and lease operations
+// using Couchbase as the underlying storage backend with distributed transaction support.
 type Controller struct {
 	cursors      *couchbase.Couchbase[pub.Cursor]
 	leases       *couchbase.Couchbase[pub.Lease]
@@ -209,7 +212,6 @@ func (c *Controller) CommitOffset(topic string, shard int, currentOffset uint64)
 	return nil
 }
 
-// InsertLease creates a lease for a message
 // InsertLease implements pub.Controller.InsertLease by creating a lease document.
 // Returns ErrDocumentExists if the message is already leased by another consumer.
 func (c *Controller) InsertLease(ctx context.Context, sub string, msgID string, offset uint64) error {
@@ -233,7 +235,6 @@ func (c *Controller) InsertLease(ctx context.Context, sub string, msgID string, 
 	return nil
 }
 
-// DeleteLease removes a lease for a message
 // DeleteLease implements pub.Controller.DeleteLease by removing the lease document.
 // Safe to call even if the lease doesn't exist.
 func (c *Controller) DeleteLease(ctx context.Context, sub string, msgID string) error {
@@ -263,7 +264,6 @@ func (c *Controller) InsertMessage(ctx context.Context, msg pub.Message) error {
 	return nil
 }
 
-// LoadMessages loads messages from a topic shard starting from a given offset
 // LoadMessages implements pub.Controller.LoadMessages using N1QL queries.
 // Returns messages ordered by offset for sequential processing.
 func (c *Controller) LoadMessages(ctx context.Context, topic string, shard int, fromOffset uint64, limit int) ([]pub.Message, error) {

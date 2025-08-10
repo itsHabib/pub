@@ -16,7 +16,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Config holds configuration for the tracing setup
+// Config holds configuration parameters for OpenTelemetry tracing setup.
+// This includes service identification, Jaeger endpoint, sampling configuration,
+// and batch processing settings for optimal trace delivery.
 type Config struct {
 	ServiceName    string        `env:"TRACING_SERVICE_NAME" envDefault:"pub-e2e"`
 	ServiceVersion string        `env:"TRACING_SERVICE_VERSION" envDefault:"1.0.0"`
@@ -28,14 +30,18 @@ type Config struct {
 	MaxQueueSize   int           `env:"TRACING_MAX_QUEUE_SIZE" envDefault:"2048"`
 }
 
-// Tracer wraps the OpenTelemetry tracer with convenience methods
+// Tracer wraps the OpenTelemetry tracer with convenience methods for pub/sub operations.
+// It provides a simplified interface for creating spans, recording errors, and adding
+// pub/sub-specific attributes while maintaining the underlying OpenTelemetry functionality.
 type Tracer struct {
 	tracer trace.Tracer
 	config Config
 	tp     *sdktrace.TracerProvider
 }
 
-// NewTracer creates and configures a new OpenTelemetry tracer
+// NewTracer creates and configures a new OpenTelemetry tracer with OTLP HTTP export.
+// It sets up the tracer provider, configures batch processing for efficient trace delivery,
+// and returns both the tracer instance and a cleanup function for graceful shutdown.
 func NewTracer(config Config) (*Tracer, func(context.Context) error, error) {
 	res, err := resource.Merge(
 		resource.Default(),
@@ -99,36 +105,42 @@ func NewTracer(config Config) (*Tracer, func(context.Context) error, error) {
 	return tracer, cleanup, nil
 }
 
-// StartSpan starts a new span with the given name and options
+// StartSpan creates a new tracing span with the specified name and options.
+// Returns the updated context containing the span and the span instance for further manipulation.
 func (t *Tracer) StartSpan(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return t.tracer.Start(ctx, spanName, opts...)
 }
 
-// SpanFromContext returns the current span from the context
+// SpanFromContext extracts the active span from the provided context.
+// Returns a no-op span if no active span is found in the context.
 func (t *Tracer) SpanFromContext(ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
 }
 
-// WithAttributes adds attributes to the current span in the context
+// WithAttributes adds key-value attributes to the active span in the context.
+// This is a convenience method for enriching spans with additional metadata.
 func (t *Tracer) WithAttributes(ctx context.Context, attrs ...attribute.KeyValue) {
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(attrs...)
 }
 
-// RecordError records an error on the current span
+// RecordError records an error event on the active span and sets the span status to error.
+// This automatically marks the span as failed and includes the error message.
 func (t *Tracer) RecordError(ctx context.Context, err error) {
 	span := trace.SpanFromContext(ctx)
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
 }
 
-// SetStatus sets the status of the current span
+// SetStatus explicitly sets the status code and description for the active span.
+// This is useful for marking spans as successful, failed, or providing custom status information.
 func (t *Tracer) SetStatus(ctx context.Context, code codes.Code, description string) {
 	span := trace.SpanFromContext(ctx)
 	span.SetStatus(code, description)
 }
 
-// Common attribute helpers for pub/sub operations
+// PubAttributes creates standard attributes for pub/sub operations.
+// Returns a slice of attributes containing topic and shard information.
 func (t *Tracer) PubAttributes(topic string, shard int) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("pub.topic", topic),
@@ -136,18 +148,24 @@ func (t *Tracer) PubAttributes(topic string, shard int) []attribute.KeyValue {
 	}
 }
 
+// ProducerAttributes creates attributes specific to producer operations.
+// Includes basic pub/sub attributes plus batch size information.
 func (t *Tracer) ProducerAttributes(topic string, shard int, batchSize int) []attribute.KeyValue {
 	attrs := t.PubAttributes(topic, shard)
 	attrs = append(attrs, attribute.Int("pub.batch_size", batchSize))
 	return attrs
 }
 
+// ConsumerAttributes creates attributes specific to consumer operations.
+// Includes basic pub/sub attributes plus subscription information.
 func (t *Tracer) ConsumerAttributes(topic, subscription string, shard int) []attribute.KeyValue {
 	attrs := t.PubAttributes(topic, shard)
 	attrs = append(attrs, attribute.String("pub.subscription", subscription))
 	return attrs
 }
 
+// DatabaseAttributes creates attributes for database operations.
+// Includes operation type and database system information.
 func (t *Tracer) DatabaseAttributes(operation string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("db.operation", operation),
@@ -155,6 +173,8 @@ func (t *Tracer) DatabaseAttributes(operation string) []attribute.KeyValue {
 	}
 }
 
+// ErrorAttributes creates attributes based on error state.
+// Returns error information if an error is provided, or success indication if nil.
 func (t *Tracer) ErrorAttributes(err error) []attribute.KeyValue {
 	if err == nil {
 		return []attribute.KeyValue{
@@ -168,7 +188,8 @@ func (t *Tracer) ErrorAttributes(err error) []attribute.KeyValue {
 	}
 }
 
-// GetTracer returns the underlying OpenTelemetry tracer
+// GetTracer returns the underlying OpenTelemetry tracer instance.
+// This provides access to the raw tracer for advanced usage not covered by the convenience methods.
 func (t *Tracer) GetTracer() trace.Tracer {
 	return t.tracer
 }

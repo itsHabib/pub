@@ -43,37 +43,41 @@ type Config struct {
 	MetricsTimeout            time.Duration `env:"METRICS_TIMEOUT" envDefault:"30s"`
 	TracingServiceName        string        `env:"TRACING_SERVICE_NAME" envDefault:"pub-e2e"`
 	TracingServiceVersion     string        `env:"TRACING_SERVICE_VERSION" envDefault:"1.0.0"`
-	JaegerEndpoint            string        `env:"JAEGER_ENDPOINT" envDefault:"localhost:4318"`
+	JaegerEndpoint            string        `env:"JAEGER_ENDPOINT" envDefault:"http://localhost:4318"`
 	TracingSampleRate         float64       `env:"TRACING_SAMPLE_RATE" envDefault:"1.0"`
+	EnableProfiling           bool          `env:"ENABLE_PROFILING" envDefault:"false"`
 }
 
 func main() {
-	cpuProfile, err := os.Create("cpu.pprof")
-	if err != nil {
-		log.Fatal("could not create CPU profile: ", err)
-	}
-	defer cpuProfile.Close()
-	if err := pprof.StartCPUProfile(cpuProfile); err != nil {
-		log.Fatal("could not start CPU profile: ", err)
-	}
-	defer pprof.StopCPUProfile()
-
-	// Memory Profile
-	defer func() {
-		memProfile, err := os.Create("mem.pprof")
-		if err != nil {
-			log.Fatal("could not create memory profile: ", err)
-		}
-		defer memProfile.Close()
-		runtime.GC()
-		if err := pprof.WriteHeapProfile(memProfile); err != nil {
-			log.Fatal("could not write memory profile: ", err)
-		}
-	}()
-
 	var cfg Config
 	if err := env.Parse(&cfg); err != nil {
 		log.Fatalf("failed to parse environment variables: %v", err)
+	}
+
+	// Enable profiling only if configured
+	if cfg.EnableProfiling {
+		cpuProfile, err := os.Create("cpu.pprof")
+		if err != nil {
+			log.Fatal("could not create CPU profile: ", err)
+		}
+		defer cpuProfile.Close()
+		if err := pprof.StartCPUProfile(cpuProfile); err != nil {
+			log.Fatal("could not start CPU profile: ", err)
+		}
+		defer pprof.StopCPUProfile()
+
+		// Memory Profile
+		defer func() {
+			memProfile, err := os.Create("mem.pprof")
+			if err != nil {
+				log.Fatal("could not create memory profile: ", err)
+			}
+			defer memProfile.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(memProfile); err != nil {
+				log.Fatal("could not write memory profile: ", err)
+			}
+		}()
 	}
 
 	cluster, bucket, err := newCouchbase(cfg)

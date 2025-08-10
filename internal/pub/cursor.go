@@ -44,8 +44,6 @@ func NewCursorsStore(cluster *gocb.Cluster, bucket *gocb.Bucket, scope string) (
 // CursorKey generates a unique key for storing cursors in Couchbase.
 // The key format is "cursor::<topic>::<subscription>::<shard>" to ensure uniqueness
 // per subscription and enable efficient querying.
-// Returns a formatted key string for Couchbase document storage.
-// Returns a formatted key string for Couchbase document storage.
 func CursorKey(topic, sub string, shard int) string {
 	return fmt.Sprintf("cursor::%s::%s::%d", topic, sub, shard)
 }

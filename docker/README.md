@@ -8,8 +8,6 @@ This directory contains the complete monitoring stack for the pub/sub system wit
 - **Prometheus**: Metrics collection and storage (port 9091)
 - **Grafana**: Metrics visualization and dashboards (port 3000)
 - **Jaeger**: Distributed tracing (port 16686)
-- **Loki**: Log aggregation and search (port 3100)
-- **Promtail**: Log collection agent
 
 ## Quick Start
 
@@ -27,7 +25,6 @@ This directory contains the complete monitoring stack for the pub/sub system wit
    - Grafana: http://localhost:3000 (admin/admin)
    - Prometheus: http://localhost:9091 (metrics)
    - Jaeger: http://localhost:16686 (traces)
-   - Loki: http://localhost:3100 (logs)
    - Application metrics: http://localhost:9090/metrics
 
 ## Services Overview

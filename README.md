@@ -30,16 +30,17 @@ The system is built around four core components:
 
 ### Running with Docker
 
-1. Clone the repository and start the Couchbase container:
+1. Clone the repository and start the observability stack:
 
 ```bash
 docker-compose up -d
 ```
 
-This will:
-- Start a Couchbase server with pre-configured collections
-- Create the `pubsub` bucket with required collections (`messages`, `cursors`, `offsets`, `leases`)
-- Set up default credentials (Username: `Administrator`, Password: `password`)
+This will start:
+- **Couchbase**: Database backend with pre-configured collections
+- **Prometheus**: Metrics collection and storage 
+- **Grafana**: Metrics visualization dashboards
+- **Jaeger**: Distributed tracing collection and UI
 
 2. Build and run the e2e example:
 
@@ -47,10 +48,18 @@ This will:
 go run cmd/e2e/main.go
 ```
 
+3. Access the monitoring dashboards:
+   - **Grafana**: http://localhost:3000 (admin/admin)
+   - **Prometheus**: http://localhost:9091
+   - **Jaeger**: http://localhost:16686 
+   - **Couchbase**: http://localhost:8091 (Administrator/password)
+
 
 ## Configuration
 
 The system can be configured using environment variables:
+
+### Core Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -60,11 +69,52 @@ The system can be configured using environment variables:
 | `COUCHBASE_BUCKET_NAME` | `pubsub` | Bucket name for storing data |
 | `COUCHBASE_SCOPE_NAME` | `default` | Scope name within the bucket |
 | `CONSUMER_BATCH_SIZE` | `50` | Number of messages to process per batch |
-| `EVENT_COUNT` | `1000` | Number of events to publish per round |
+| `EVENT_COUNT` | `100` | Number of events to publish per round |
 | `PUBLISH_MESSAGES_PER_SEC` | `0` | Rate limiting (0 = no limit) |
 | `PUBLISH_ROUNDS` | `1` | Number of publishing rounds |
 | `CONSUMER_MAX_EMPTY_COUNT` | `2` | Max empty polls before consumer stops |
 | `LOG_LEVEL` | `info` | Logging level (debug, info, warn, error) |
+
+### Observability Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `METRICS_PORT` | `9090` | Port for Prometheus metrics endpoint |
+| `METRICS_TIMEOUT` | `30s` | HTTP timeout for metrics server |
+| `TRACING_SERVICE_NAME` | `pub-e2e` | Service name in distributed traces |
+| `TRACING_SERVICE_VERSION` | `1.0.0` | Service version for tracing |
+| `JAEGER_ENDPOINT` | `http://localhost:4318` | Jaeger OTLP HTTP endpoint |
+| `TRACING_SAMPLE_RATE` | `1.0` | Trace sampling rate (0.0-1.0) |
+| `ENABLE_PROFILING` | `false` | Enable CPU and memory profiling |
+
+## Monitoring & Observability
+
+The system provides comprehensive observability through three key areas:
+
+### Metrics (Prometheus + Grafana)
+- **Producer metrics**: Publish throughput, batch sizes, error rates
+- **Consumer metrics**: Consumption rates, processing latency, queue lag
+- **Database metrics**: Operation latency, connection pool status
+- **System metrics**: Memory usage, active connections, lease counts
+
+Access metrics at:
+- Raw metrics: http://localhost:9090/metrics
+- Grafana dashboards: http://localhost:3000
+
+### Distributed Tracing (Jaeger)
+- End-to-end request flow visualization
+- Performance bottleneck identification  
+- Cross-service dependency mapping
+- Automatic span creation for all pub/sub operations
+
+Access traces at: http://localhost:16686
+
+### Profiling (pprof)
+Enable CPU and memory profiling by setting `ENABLE_PROFILING=true`:
+```bash
+ENABLE_PROFILING=true go run cmd/e2e/main.go
+```
+This generates `cpu.pprof` and `mem.pprof` files for performance analysis.
 
 ## Usage Examples
 

@@ -32,6 +32,7 @@ type Lease struct {
 
 // NewLeasesStore creates a new Couchbase-backed storage for Lease entities.
 // This initializes the connection to the "leases" collection within the specified scope.
+// Returns a configured storage instance for Lease operations, or an error if setup fails.
 func NewLeasesStore(cluster *gocb.Cluster, bucket *gocb.Bucket, scope string) (*couchbase.Couchbase[Lease], error) {
 	collection := bucket.Scope(scope).Collection("leases")
 	store, err := couchbase.NewCouchbase[Lease](cluster, bucket, collection)

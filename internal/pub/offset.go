@@ -24,12 +24,6 @@ type Offset struct {
 
 // NewOffsetsStore creates a new Couchbase-backed storage for Offset entities.
 // This initializes the connection to the "offsets" collection within the specified scope.
-//
-// Parameters:
-//   - cluster: Couchbase cluster connection
-//   - bucket: Couchbase bucket containing the offsets collection
-//   - scope: Name of the scope containing the offsets collection
-//
 // Returns a configured storage instance for Offset operations, or an error if setup fails.
 func NewOffsetsStore(cluster *gocb.Cluster, bucket *gocb.Bucket, scope string) (*couchbase.Couchbase[Offset], error) {
 	collection := bucket.Scope(scope).Collection("offsets")
@@ -44,12 +38,6 @@ func NewOffsetsStore(cluster *gocb.Cluster, bucket *gocb.Bucket, scope string) (
 // OffsetKey generates a unique key for storing offsets in Couchbase.
 // The key format is "offset::<topic>::<shard>" to ensure uniqueness
 // per topic shard and enable efficient querying.
-//
-// Parameters:
-//   - topic: The topic name
-//   - shard: The shard number within the topic
-//
-// Returns a formatted key string for Couchbase document storage.
 func OffsetKey(topic string, shard int) string {
 	return fmt.Sprintf("offset::%s::%d", topic, shard)
 }
